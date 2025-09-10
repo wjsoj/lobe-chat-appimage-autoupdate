@@ -1,0 +1,113 @@
+name: Update AUR package
+
+on:
+  schedule:
+    - cron: '0 20 * * *' # daily 02:17 UTC
+  workflow_dispatch:
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    env:
+      AUR_REPO: lobe-chat-appimage
+      GIT_AUTHOR_NAME: CI Bot
+      GIT_AUTHOR_EMAIL: ci-bot@example.invalid
+      GIT_COMMITTER_NAME: CI Bot
+      GIT_COMMITTER_EMAIL: ci-bot@example.invalid
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install tools
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y curl jq git openssh-client
+
+      - name: Fetch latest release metadata
+        id: rel
+        run: |
+          api_url="https://api.github.com/repos/lobehub/lobe-chat/releases/latest"
+          json=$(curl -sSL "$api_url")
+          version=$(echo "$json" | jq -r '.tag_name' | sed 's/^v//')
+          appimage_asset=$(echo "$json" | jq -r '.assets[] | select(.name|test("LobeHub-Beta-"+""+"[0-9].*"+".AppImage$")) | .browser_download_url')
+          if [ -z "$appimage_asset" ]; then
+            echo "No AppImage asset found" >&2
+            exit 1
+          fi
+          echo "Latest version: $version"
+          echo "AppImage URL: $appimage_asset"
+          echo "version=$version" >> $GITHUB_OUTPUT
+          echo "appimage_url=$appimage_asset" >> $GITHUB_OUTPUT
+
+      - name: Skip if already up to date
+        id: checkver
+        run: |
+          current=$(grep '^pkgver=' PKGBUILD | cut -d= -f2)
+          if [ "$current" = "${{ steps.rel.outputs.version }}" ]; then
+            echo "up_to_date=true" >> $GITHUB_OUTPUT
+            echo "Package already at latest version $current";
+          else
+            echo "up_to_date=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Exit early
+        if: steps.checkver.outputs.up_to_date == 'true'
+        run: echo "Already latest."
+
+      - name: Download AppImage & LICENSE
+        id: download
+        if: steps.checkver.outputs.up_to_date != 'true'
+        run: |
+          curl -L "${{ steps.rel.outputs.appimage_url }}" -o LobeHub-Beta-${{ steps.rel.outputs.version }}.AppImage
+          curl -L "https://raw.githubusercontent.com/lobehub/lobe-chat/v${{ steps.rel.outputs.version }}/LICENSE" -o LICENSE
+          curl -L "https://raw.githubusercontent.com/lobehub/lobe-chat/v${{ steps.rel.outputs.version }}/apps/desktop/resources/tray.png" -o lobe-chat.png
+          sha_appimage=$(sha256sum LobeHub-Beta-${{ steps.rel.outputs.version }}.AppImage | awk '{print $1}')
+          sha_license=$(sha256sum LICENSE | awk '{print $1}')
+          sha_icon=$(sha256sum lobe-chat.png | awk '{print $1}')
+          echo "sha_appimage=$sha_appimage" >> $GITHUB_OUTPUT
+          echo "sha_license=$sha_license" >> $GITHUB_OUTPUT
+          echo "sha_icon=$sha_icon" >> $GITHUB_OUTPUT
+
+      - name: Update PKGBUILD
+        if: steps.checkver.outputs.up_to_date != 'true'
+        run: |
+          ver=${{ steps.rel.outputs.version }}
+          sha_appimage=${{ steps.download.outputs.sha_appimage }}
+          sha_license=${{ steps.download.outputs.sha_license }}
+          sha_icon=${{ steps.download.outputs.sha_icon }}
+          sed -i "s/^pkgver=.*/pkgver=$ver/" PKGBUILD
+          sed -i "s/APPIMAGE_SHA256/$sha_appimage/" PKGBUILD
+          sed -i "s/LICENSE_SHA256/$sha_license/" PKGBUILD
+          sed -i "s/ICON_SHA256/$sha_icon/" PKGBUILD
+          grep -E 'pkgver=|sha256sums' -n PKGBUILD
+
+      - name: Generate .SRCINFO
+        if: steps.checkver.outputs.up_to_date != 'true'
+        run: |
+          docker run --rm -v "$PWD":/work -w /work archlinux:base-devel bash -lc "pacman -Sy --noconfirm base-devel git && useradd -m builder && chown -R builder:builder /work && su builder -c 'makepkg --printsrcinfo > .SRCINFO'"
+
+      - name: Configure AUR SSH key
+        if: steps.checkver.outputs.up_to_date != 'true'
+        run: |
+          install -m 700 -d ~/.ssh
+          echo "${{ secrets.AUR_SSH_PRIVATE_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          cat >> ~/.ssh/config <<EOF
+          Host aur.archlinux.org
+            User aur
+            IdentityFile ~/.ssh/id_ed25519
+            StrictHostKeyChecking accept-new
+          EOF
+
+      - name: Push to AUR
+        if: steps.checkver.outputs.up_to_date != 'true'
+        run: |
+          git config user.name "$GIT_AUTHOR_NAME"
+          git config user.email "$GIT_AUTHOR_EMAIL"
+          if git remote | grep -q aur; then git remote remove aur; fi
+          git remote add aur "ssh://aur@aur.archlinux.org/${AUR_REPO}.git"
+          git add PKGBUILD .SRCINFO
+          git commit -m "Update to ${{ steps.rel.outputs.version }}" || echo "No changes to commit"
+          git push aur HEAD:master

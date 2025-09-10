@@ -1,0 +1,16 @@
+pkgbase = lobe-chat-appimage
+	pkgdesc = An open-source, modern-design LLMs/AI chat framework (AppImage)
+	pkgver = 1.126.3
+	pkgrel = 1
+	url = https://github.com/lobehub/lobe-chat
+	arch = x86_64
+	license = Apache-2.0
+	depends = fuse2
+	conflicts = lobe-chat
+	source = LobeHub-Beta-1.126.3.AppImage::https://github.com/lobehub/lobe-chat/releases/download/v1.126.3/LobeHub-Beta-1.126.3.AppImage
+	source = LICENSE::https://raw.githubusercontent.com/lobehub/lobe-chat/v1.126.3/LICENSE
+	sha256sums = APPIMAGE_SHA256
+  sha256sums = LICENSE_SHA256
+  sha256sums = ICON_SHA256
+
+pkgname = lobe-chat-appimage
