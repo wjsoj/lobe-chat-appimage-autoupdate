@@ -10,10 +10,10 @@ jobs:
     runs-on: ubuntu-latest
     env:
       AUR_REPO: lobe-chat-appimage
-      GIT_AUTHOR_NAME: CI Bot
-      GIT_AUTHOR_EMAIL: ci-bot@example.invalid
-      GIT_COMMITTER_NAME: CI Bot
-      GIT_COMMITTER_EMAIL: ci-bot@example.invalid
+      GIT_AUTHOR_NAME: wjsoj
+      GIT_AUTHOR_EMAIL: wjs@wjsphy.top
+      GIT_COMMITTER_NAME: wjsoj
+      GIT_COMMITTER_EMAIL: wjs@wjsphy.top
     steps:
       - name: Checkout
         uses: actions/checkout@v4
