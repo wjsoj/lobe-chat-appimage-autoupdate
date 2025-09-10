@@ -96,10 +96,10 @@ jobs:
           # Update version
           sed -i "s/^pkgver=.*/pkgver=$ver/" PKGBUILD
           
-          # Replace checksums with proper targeting (first, second, third line of array)
-          sed -i "0,/APPIMAGE_SHA256\|'[a-f0-9]\{64\}'/{s/APPIMAGE_SHA256\|'[a-f0-9]\{64\}'/'$sha_appimage'/}" PKGBUILD
-          sed -i "0,/LICENSE_SHA256\|'[a-f0-9]\{64\}'/{s/LICENSE_SHA256\|'[a-f0-9]\{64\}'/'$sha_license'/}" PKGBUILD  
-          sed -i "0,/ICON_SHA256\|'[a-f0-9]\{64\}'/{s/ICON_SHA256\|'[a-f0-9]\{64\}'/'$sha_icon'/}" PKGBUILD
+          # Replace checksums by specific placeholders to avoid conflicts
+          sed -i "s/APPIMAGE_SHA256/'$sha_appimage'/" PKGBUILD
+          sed -i "s/LICENSE_SHA256/'$sha_license'/" PKGBUILD  
+          sed -i "s/ICON_SHA256/'$sha_icon'/" PKGBUILD
           
           echo "Updated PKGBUILD contents:"
           grep -E 'pkgver=|sha256sums' -A 3 PKGBUILD
