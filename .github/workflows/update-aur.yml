@@ -61,11 +61,11 @@ jobs:
           
           # Download with cache-busting and retry logic
           echo "Downloading AppImage..."
-          curl -L --retry 3 --fail --no-cache "${{ steps.rel.outputs.appimage_url }}" -o LobeHub-Beta-${{ steps.rel.outputs.version }}.AppImage
+          curl -L --retry 3 --fail -H "Cache-Control: no-cache" "${{ steps.rel.outputs.appimage_url }}" -o LobeHub-Beta-${{ steps.rel.outputs.version }}.AppImage
           echo "Downloading LICENSE..."
-          curl -L --retry 3 --fail --no-cache "https://raw.githubusercontent.com/lobehub/lobe-chat/v${{ steps.rel.outputs.version }}/LICENSE" -o LICENSE
+          curl -L --retry 3 --fail -H "Cache-Control: no-cache" "https://raw.githubusercontent.com/lobehub/lobe-chat/v${{ steps.rel.outputs.version }}/LICENSE" -o LICENSE
           echo "Downloading icon..."
-          curl -L --retry 3 --fail --no-cache "https://raw.githubusercontent.com/lobehub/lobe-chat/v${{ steps.rel.outputs.version }}/apps/desktop/resources/tray.png" -o lobe-chat.png
+          curl -L --retry 3 --fail -H "Cache-Control: no-cache" "https://raw.githubusercontent.com/lobehub/lobe-chat/v${{ steps.rel.outputs.version }}/apps/desktop/resources/tray.png" -o lobe-chat.png
           
           # Verify downloads completed
           ls -la LobeHub-Beta-${{ steps.rel.outputs.version }}.AppImage LICENSE lobe-chat.png
