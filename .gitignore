@@ -1,0 +1,14 @@
+# Ignore everything by default
+*
+
+# Allow essential packaging & metadata files
+!.gitignore
+!PKGBUILD
+!.SRCINFO
+!LICENSE
+!README.md
+
+# Allow GitHub workflow for automation
+!.github/
+!.github/workflows/
+!.github/workflows/update-aur.yml
