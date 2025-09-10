@@ -56,12 +56,29 @@ jobs:
         id: download
         if: steps.checkver.outputs.up_to_date != 'true'
         run: |
-          curl -L "${{ steps.rel.outputs.appimage_url }}" -o LobeHub-Beta-${{ steps.rel.outputs.version }}.AppImage
-          curl -L "https://raw.githubusercontent.com/lobehub/lobe-chat/v${{ steps.rel.outputs.version }}/LICENSE" -o LICENSE
-          curl -L "https://raw.githubusercontent.com/lobehub/lobe-chat/v${{ steps.rel.outputs.version }}/apps/desktop/resources/tray.png" -o lobe-chat.png
+          # Clean any existing downloads to avoid cache issues
+          rm -f LobeHub-Beta-*.AppImage LICENSE lobe-chat.png
+          
+          # Download with cache-busting and retry logic
+          echo "Downloading AppImage..."
+          curl -L --retry 3 --fail --no-cache "${{ steps.rel.outputs.appimage_url }}" -o LobeHub-Beta-${{ steps.rel.outputs.version }}.AppImage
+          echo "Downloading LICENSE..."
+          curl -L --retry 3 --fail --no-cache "https://raw.githubusercontent.com/lobehub/lobe-chat/v${{ steps.rel.outputs.version }}/LICENSE" -o LICENSE
+          echo "Downloading icon..."
+          curl -L --retry 3 --fail --no-cache "https://raw.githubusercontent.com/lobehub/lobe-chat/v${{ steps.rel.outputs.version }}/apps/desktop/resources/tray.png" -o lobe-chat.png
+          
+          # Verify downloads completed
+          ls -la LobeHub-Beta-${{ steps.rel.outputs.version }}.AppImage LICENSE lobe-chat.png
+          
+          # Calculate checksums
           sha_appimage=$(sha256sum LobeHub-Beta-${{ steps.rel.outputs.version }}.AppImage | awk '{print $1}')
           sha_license=$(sha256sum LICENSE | awk '{print $1}')
           sha_icon=$(sha256sum lobe-chat.png | awk '{print $1}')
+          
+          echo "AppImage SHA256: $sha_appimage"
+          echo "LICENSE SHA256: $sha_license"
+          echo "Icon SHA256: $sha_icon"
+          
           echo "sha_appimage=$sha_appimage" >> $GITHUB_OUTPUT
           echo "sha_license=$sha_license" >> $GITHUB_OUTPUT
           echo "sha_icon=$sha_icon" >> $GITHUB_OUTPUT
@@ -73,11 +90,19 @@ jobs:
           sha_appimage=${{ steps.download.outputs.sha_appimage }}
           sha_license=${{ steps.download.outputs.sha_license }}
           sha_icon=${{ steps.download.outputs.sha_icon }}
+          
+          echo "Updating PKGBUILD with version $ver..."
+          
+          # Update version
           sed -i "s/^pkgver=.*/pkgver=$ver/" PKGBUILD
-          sed -i "s/APPIMAGE_SHA256/$sha_appimage/" PKGBUILD
-          sed -i "s/LICENSE_SHA256/$sha_license/" PKGBUILD
-          sed -i "s/ICON_SHA256/$sha_icon/" PKGBUILD
-          grep -E 'pkgver=|sha256sums' -n PKGBUILD
+          
+          # Replace checksums (handle both placeholders and existing hashes)
+          sed -i "s/APPIMAGE_SHA256\|'[a-f0-9]\{64\}'/'$sha_appimage'/1" PKGBUILD
+          sed -i "s/LICENSE_SHA256\|'[a-f0-9]\{64\}'/'$sha_license'/1" PKGBUILD  
+          sed -i "s/ICON_SHA256\|'[a-f0-9]\{64\}'/'$sha_icon'/1" PKGBUILD
+          
+          echo "Updated PKGBUILD contents:"
+          grep -E 'pkgver=|sha256sums' -A 3 PKGBUILD
 
       - name: Generate .SRCINFO
         if: steps.checkver.outputs.up_to_date != 'true'
