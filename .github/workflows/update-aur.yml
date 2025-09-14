@@ -1,13 +1,103 @@
-name: Update AUR package
+name: Update AUR Package
 
 on:
+  # 更频繁的定时检查来快速响应新release
   schedule:
-    - cron: '0 20 * * *' # daily 02:17 UTC
-  workflow_dispatch:
+    - cron: '* */4 * * *' # 每4小时检查一次
+
+  workflow_dispatch: # 允许手动触发
+    inputs:
+      force_update:
+        description: '强制更新（忽略版本检查）'
+        required: false
+        default: false
+        type: boolean
 
 jobs:
-  update:
+  check-and-wait:
     runs-on: ubuntu-latest
+    outputs:
+      should_update: ${{ steps.check.outputs.should_update }}
+      latest_version: ${{ steps.check.outputs.latest_version }}
+      appimage_url: ${{ steps.check.outputs.appimage_url }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check for updates and wait for artifacts
+        id: check
+        run: |
+          echo "🔍 检查LobeChat新版本..."
+          
+          # 获取最新release信息
+          api_url="https://api.github.com/repos/lobehub/lobe-chat/releases/latest"
+          json=$(curl -sSL "$api_url")
+          latest_version=$(echo "$json" | sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p' | sed 's/^v//')
+          
+          echo "📦 最新版本: $latest_version"
+          echo "latest_version=$latest_version" >> $GITHUB_OUTPUT
+          
+          # 检查是否强制更新
+          if [ "${{ github.event.inputs.force_update }}" = "true" ]; then
+            echo "🔄 强制更新模式"
+            echo "should_update=true" >> $GITHUB_OUTPUT
+          else
+            # 检查当前版本
+            if [ -f "PKGBUILD" ]; then
+              current_version=$(grep '^pkgver=' PKGBUILD | cut -d'=' -f2)
+              echo "📋 当前版本: $current_version"
+              
+              if [ "$latest_version" = "$current_version" ]; then
+                echo "✅ 版本已是最新"
+                echo "should_update=false" >> $GITHUB_OUTPUT
+                exit 0
+              fi
+            fi
+          fi
+          
+          # 等待构建产物可用
+          echo "⏳ 检查构建产物是否可用..."
+          max_attempts=10  # 最多等待10次（约5分钟）
+          attempt=1
+          appimage_found=false
+          
+          while [ $attempt -le $max_attempts ]; do
+            echo "🔍 检查构建产物 (尝试 $attempt/$max_attempts)..."
+            
+            # 重新获取release信息，因为assets可能在后续添加
+            json=$(curl -sSL "$api_url")
+            
+            # 查找AppImage asset
+            appimage_asset=$(echo "$json" | grep -o '"browser_download_url": *"[^"]*LobeHub-Beta-[^"]*\.AppImage"' | sed 's/.*"browser_download_url": *"\([^"]*\)".*/\1/' | head -1)
+            
+            if [ -n "$appimage_asset" ]; then
+              # 验证文件确实可以下载
+              if curl -s -I "$appimage_asset" | grep -q "HTTP.*200"; then
+                echo "✅ 构建产物已可用: $appimage_asset"
+                echo "appimage_url=$appimage_asset" >> $GITHUB_OUTPUT
+                echo "should_update=true" >> $GITHUB_OUTPUT
+                appimage_found=true
+                break
+              fi
+            fi
+            
+            if [ $attempt -eq $max_attempts ]; then
+              echo "⏱️ 构建产物暂未就绪，等待下次检查"
+              echo "should_update=false" >> $GITHUB_OUTPUT
+              exit 0  # 正常退出，等待下次定时检查
+            fi
+            
+            echo "⏱️ 等待30秒后重试..."
+            sleep 30
+            attempt=$((attempt + 1))
+          done
+
+  update:
+    needs: check-and-wait
+    runs-on: ubuntu-latest
+    if: needs.check-and-wait.outputs.should_update == 'true'
     env:
       AUR_REPO: lobe-chat-appimage
       GIT_AUTHOR_NAME: wjsoj
@@ -20,58 +110,28 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Fetch latest release metadata
-        id: rel
-        run: |
-          api_url="https://api.github.com/repos/lobehub/lobe-chat/releases/latest"
-          json=$(curl -sSL "$api_url")
-          # Parse JSON with shell instead of jq to avoid dependencies
-          version=$(echo "$json" | sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p' | sed 's/^v//')
-          appimage_asset=$(echo "$json" | grep -o '"browser_download_url": *"[^"]*LobeHub-Beta-[^"]*\.AppImage"' | sed 's/.*"browser_download_url": *"\([^"]*\)".*/\1/')
-          if [ -z "$appimage_asset" ]; then
-            echo "No AppImage asset found" >&2
-            exit 1
-          fi
-          echo "Latest version: $version"
-          echo "AppImage URL: $appimage_asset"
-          echo "version=$version" >> $GITHUB_OUTPUT
-          echo "appimage_url=$appimage_asset" >> $GITHUB_OUTPUT
-
-      - name: Skip if already up to date
-        id: checkver
-        run: |
-          current=$(grep '^pkgver=' PKGBUILD | cut -d= -f2)
-          if [ "$current" = "${{ steps.rel.outputs.version }}" ]; then
-            echo "up_to_date=true" >> $GITHUB_OUTPUT
-            echo "Package already at latest version $current";
-          else
-            echo "up_to_date=false" >> $GITHUB_OUTPUT
-          fi
-
-      - name: Exit early
-        if: steps.checkver.outputs.up_to_date == 'true'
-        run: echo "Already latest."
-
       - name: Download AppImage & LICENSE
         id: download
-        if: steps.checkver.outputs.up_to_date != 'true'
         run: |
+          version="${{ needs.check-and-wait.outputs.latest_version }}"
+          appimage_url="${{ needs.check-and-wait.outputs.appimage_url }}"
+          
           # Clean any existing downloads to avoid cache issues
           rm -f LobeHub-Beta-*.AppImage LICENSE lobe-chat.png
           
           # Download with cache-busting and retry logic
           echo "Downloading AppImage..."
-          curl -L --retry 3 --fail -H "Cache-Control: no-cache" "${{ steps.rel.outputs.appimage_url }}" -o LobeHub-Beta-${{ steps.rel.outputs.version }}.AppImage
+          curl -L --retry 3 --fail -H "Cache-Control: no-cache" "$appimage_url" -o "LobeHub-Beta-${version}.AppImage"
           echo "Downloading LICENSE..."
-          curl -L --retry 3 --fail -H "Cache-Control: no-cache" "https://raw.githubusercontent.com/lobehub/lobe-chat/v${{ steps.rel.outputs.version }}/LICENSE" -o LICENSE
+          curl -L --retry 3 --fail -H "Cache-Control: no-cache" "https://raw.githubusercontent.com/lobehub/lobe-chat/v${version}/LICENSE" -o LICENSE
           echo "Downloading icon..."
-          curl -L --retry 3 --fail -H "Cache-Control: no-cache" "https://raw.githubusercontent.com/lobehub/lobe-chat/v${{ steps.rel.outputs.version }}/apps/desktop/resources/tray.png" -o lobe-chat.png
+          curl -L --retry 3 --fail -H "Cache-Control: no-cache" "https://raw.githubusercontent.com/lobehub/lobe-chat/v${version}/apps/desktop/resources/tray.png" -o lobe-chat.png
           
           # Verify downloads completed
-          ls -la LobeHub-Beta-${{ steps.rel.outputs.version }}.AppImage LICENSE lobe-chat.png
+          ls -la "LobeHub-Beta-${version}.AppImage" LICENSE lobe-chat.png
           
           # Calculate checksums
-          sha_appimage=$(sha256sum LobeHub-Beta-${{ steps.rel.outputs.version }}.AppImage | awk '{print $1}')
+          sha_appimage=$(sha256sum "LobeHub-Beta-${version}.AppImage" | awk '{print $1}')
           sha_license=$(sha256sum LICENSE | awk '{print $1}')
           sha_icon=$(sha256sum lobe-chat.png | awk '{print $1}')
           
@@ -84,12 +144,11 @@ jobs:
           echo "sha_icon=$sha_icon" >> $GITHUB_OUTPUT
 
       - name: Update PKGBUILD
-        if: steps.checkver.outputs.up_to_date != 'true'
         run: |
-          ver=${{ steps.rel.outputs.version }}
-          sha_appimage=${{ steps.download.outputs.sha_appimage }}
-          sha_license=${{ steps.download.outputs.sha_license }}
-          sha_icon=${{ steps.download.outputs.sha_icon }}
+          ver="${{ needs.check-and-wait.outputs.latest_version }}"
+          sha_appimage="${{ steps.download.outputs.sha_appimage }}"
+          sha_license="${{ steps.download.outputs.sha_license }}"
+          sha_icon="${{ steps.download.outputs.sha_icon }}"
           
           echo "Updating PKGBUILD with version $ver..."
           
@@ -105,13 +164,11 @@ jobs:
           grep -E 'pkgver=|sha256sums' -A 3 PKGBUILD
 
       - name: Generate .SRCINFO
-        if: steps.checkver.outputs.up_to_date != 'true'
         run: |
           docker run --rm -v "$PWD":/work -w /work archlinux:base-devel bash -lc "pacman -Sy --noconfirm base-devel git && useradd -m builder && chown -R builder:builder /work && su builder -c 'makepkg --printsrcinfo > .SRCINFO'"
           sudo chown -R $(whoami):$(whoami) .
 
       - name: Configure AUR SSH key
-        if: steps.checkver.outputs.up_to_date != 'true'
         run: |
           install -m 700 -d ~/.ssh
           echo "${{ secrets.AUR_SSH_PRIVATE_KEY }}" > ~/.ssh/id_ed25519
@@ -124,7 +181,6 @@ jobs:
           EOF
 
       - name: Push to AUR
-        if: steps.checkver.outputs.up_to_date != 'true'
         run: |
           # Configure git globally to avoid .git/config permission issues
           git config --global user.name "$GIT_AUTHOR_NAME"
@@ -143,6 +199,6 @@ jobs:
           if git diff --cached --quiet; then
             echo "No changes to commit"
           else
-            git commit -m "Update to ${{ steps.rel.outputs.version }}"
+            git commit -m "Update to ${{ needs.check-and-wait.outputs.latest_version }}"
             git push origin master
           fi
