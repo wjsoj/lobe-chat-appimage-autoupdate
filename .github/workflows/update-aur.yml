@@ -3,7 +3,7 @@ name: Update AUR Package
 on:
   # 更频繁的定时检查来快速响应新release
   schedule:
-  - cron: '0 */4 * * *' # 每4小时检查一次
+  - cron: '0 */10 * * *' # 每10小时检查一次
 
   workflow_dispatch: # 允许手动触发
     inputs:
