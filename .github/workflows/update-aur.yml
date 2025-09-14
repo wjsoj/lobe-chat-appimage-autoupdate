@@ -3,8 +3,8 @@ name: Update AUR Package
 on:
   # 更频繁的定时检查来快速响应新release
   schedule:
-    - cron: '* */4 * * *' # 每4小时检查一次
-
+    - cron: '*/15 * * * *' # 每15分钟检查一次
+  
   workflow_dispatch: # 允许手动触发
     inputs:
       force_update:
@@ -14,7 +14,7 @@ on:
         type: boolean
 
 jobs:
-  check-and-wait:
+  check-and-find:
     runs-on: ubuntu-latest
     outputs:
       should_update: ${{ steps.check.outputs.should_update }}
@@ -26,78 +26,108 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Check for updates and wait for artifacts
+      - name: Check for updates and find available version
         id: check
         run: |
           echo "🔍 检查LobeChat新版本..."
           
-          # 获取最新release信息
-          api_url="https://api.github.com/repos/lobehub/lobe-chat/releases/latest"
-          json=$(curl -sSL "$api_url")
-          latest_version=$(echo "$json" | sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p' | sed 's/^v//')
-          
-          echo "📦 最新版本: $latest_version"
-          echo "latest_version=$latest_version" >> $GITHUB_OUTPUT
-          
           # 检查是否强制更新
           if [ "${{ github.event.inputs.force_update }}" = "true" ]; then
             echo "🔄 强制更新模式"
+            # 获取最新release信息
+            api_url="https://api.github.com/repos/lobehub/lobe-chat/releases/latest"
+            json=$(curl -sSL "$api_url")
+            latest_version=$(echo "$json" | sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p' | sed 's/^v//')
+            echo "latest_version=$latest_version" >> $GITHUB_OUTPUT
             echo "should_update=true" >> $GITHUB_OUTPUT
-          else
-            # 检查当前版本
-            if [ -f "PKGBUILD" ]; then
-              current_version=$(grep '^pkgver=' PKGBUILD | cut -d'=' -f2)
-              echo "📋 当前版本: $current_version"
-              
-              if [ "$latest_version" = "$current_version" ]; then
-                echo "✅ 版本已是最新"
-                echo "should_update=false" >> $GITHUB_OUTPUT
-                exit 0
-              fi
-            fi
+            exit 0
           fi
           
-          # 等待构建产物可用
-          echo "⏳ 检查构建产物是否可用..."
-          max_attempts=10  # 最多等待10次（约5分钟）
-          attempt=1
-          appimage_found=false
+          # 查找有构建产物的最新版本
+          echo "🔍 查找有构建产物的最新版本..."
           
-          while [ $attempt -le $max_attempts ]; do
-            echo "🔍 检查构建产物 (尝试 $attempt/$max_attempts)..."
+          # 获取最近10个releases
+          releases_json=$(curl -sSL "https://api.github.com/repos/lobehub/lobe-chat/releases?per_page=10")
+          
+          # 查找第一个有AppImage的版本
+          latest_available_version=""
+          appimage_url=""
+          
+          # 创建临时文件来存储结果
+          temp_result="/tmp/check_result_$$"
+          
+          # 提取所有tag名称并逐个检查
+          echo "$releases_json" | grep '"tag_name":' | sed 's/.*"tag_name": *"\([^"]*\)".*/\1/' | head -10 | while read -r tag_name; do
+            # 如果已经找到了版本，跳出循环
+            if [ -f "${temp_result}_found" ]; then
+              break
+            fi
             
-            # 重新获取release信息，因为assets可能在后续添加
-            json=$(curl -sSL "$api_url")
+            version=${tag_name#v}  # 移除v前缀
+            echo "📦 检查版本: $version"
+            
+            # 获取该版本的详细信息
+            release_json=$(curl -sSL "https://api.github.com/repos/lobehub/lobe-chat/releases/tags/$tag_name")
             
             # 查找AppImage asset
-            appimage_asset=$(echo "$json" | grep -o '"browser_download_url": *"[^"]*LobeHub-Beta-[^"]*\.AppImage"' | sed 's/.*"browser_download_url": *"\([^"]*\)".*/\1/' | head -1)
+            appimage_asset=$(echo "$release_json" | grep -o '"browser_download_url": *"[^"]*LobeHub-Beta-[^"]*\.AppImage"' | sed 's/.*"browser_download_url": *"\([^"]*\)".*/\1/' | head -1)
             
             if [ -n "$appimage_asset" ]; then
               # 验证文件确实可以下载
               if curl -s -I "$appimage_asset" | grep -q "HTTP.*200"; then
-                echo "✅ 构建产物已可用: $appimage_asset"
-                echo "appimage_url=$appimage_asset" >> $GITHUB_OUTPUT
-                echo "should_update=true" >> $GITHUB_OUTPUT
-                appimage_found=true
+                echo "✅ 找到可用的构建产物: $version"
+                echo "📁 AppImage URL: $appimage_asset"
+                # 保存结果到临时文件
+                echo "$version" > "${temp_result}_version"
+                echo "$appimage_asset" > "${temp_result}_url"
+                touch "${temp_result}_found"
                 break
+              else
+                echo "⚠️  版本 $version 的AppImage无法访问"
               fi
+            else
+              echo "⚠️  版本 $version 没有AppImage文件"
             fi
-            
-            if [ $attempt -eq $max_attempts ]; then
-              echo "⏱️ 构建产物暂未就绪，等待下次检查"
-              echo "should_update=false" >> $GITHUB_OUTPUT
-              exit 0  # 正常退出，等待下次定时检查
-            fi
-            
-            echo "⏱️ 等待30秒后重试..."
-            sleep 30
-            attempt=$((attempt + 1))
           done
+          
+          # 读取结果
+          if [ -f "${temp_result}_found" ]; then
+            latest_available_version=$(cat "${temp_result}_version")
+            appimage_url=$(cat "${temp_result}_url")
+            rm -f "${temp_result}_"*
+          else
+            rm -f "${temp_result}_"*
+          fi
+          
+          if [ -z "$latest_available_version" ]; then
+            echo "❌ 没有找到任何可用的构建产物"
+            echo "should_update=false" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+          
+          echo "📦 可用版本: $latest_available_version"
+          echo "latest_version=$latest_available_version" >> $GITHUB_OUTPUT
+          echo "appimage_url=$appimage_url" >> $GITHUB_OUTPUT
+          
+          # 检查当前版本
+          if [ -f "PKGBUILD" ]; then
+            current_version=$(grep '^pkgver=' PKGBUILD | cut -d'=' -f2)
+            echo "📋 当前版本: $current_version"
+            
+            if [ "$latest_available_version" = "$current_version" ]; then
+              echo "✅ 版本已是最新"
+              echo "should_update=false" >> $GITHUB_OUTPUT
+              exit 0
+            fi
+          fi
+          
+          echo "🆕 发现新版本需要更新"
+          echo "should_update=true" >> $GITHUB_OUTPUT
 
   update:
-    needs: check-and-wait
+    needs: check-and-find
     runs-on: ubuntu-latest
-    if: needs.check-and-wait.outputs.should_update == 'true'
+    if: needs.check-and-find.outputs.should_update == 'true'
     env:
       AUR_REPO: lobe-chat-appimage
       GIT_AUTHOR_NAME: wjsoj
@@ -113,8 +143,8 @@ jobs:
       - name: Download AppImage & LICENSE
         id: download
         run: |
-          version="${{ needs.check-and-wait.outputs.latest_version }}"
-          appimage_url="${{ needs.check-and-wait.outputs.appimage_url }}"
+          version="${{ needs.check-and-find.outputs.latest_version }}"
+          appimage_url="${{ needs.check-and-find.outputs.appimage_url }}"
           
           # Clean any existing downloads to avoid cache issues
           rm -f LobeHub-Beta-*.AppImage LICENSE lobe-chat.png
@@ -145,7 +175,7 @@ jobs:
 
       - name: Update PKGBUILD
         run: |
-          ver="${{ needs.check-and-wait.outputs.latest_version }}"
+          ver="${{ needs.check-and-find.outputs.latest_version }}"
           sha_appimage="${{ steps.download.outputs.sha_appimage }}"
           sha_license="${{ steps.download.outputs.sha_license }}"
           sha_icon="${{ steps.download.outputs.sha_icon }}"
@@ -199,6 +229,6 @@ jobs:
           if git diff --cached --quiet; then
             echo "No changes to commit"
           else
-            git commit -m "Update to ${{ needs.check-and-wait.outputs.latest_version }}"
+            git commit -m "Update to ${{ needs.check-and-find.outputs.latest_version }}"
             git push origin master
           fi
