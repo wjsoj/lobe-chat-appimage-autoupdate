@@ -3,8 +3,8 @@ name: Update AUR Package
 on:
   # 更频繁的定时检查来快速响应新release
   schedule:
-    - cron: '*/15 * * * *' # 每15分钟检查一次
-  
+    - cron: '* */4 * * *' # 每4小时检查一次
+
   workflow_dispatch: # 允许手动触发
     inputs:
       force_update:
@@ -46,21 +46,20 @@ jobs:
           # 查找有构建产物的最新版本
           echo "🔍 查找有构建产物的最新版本..."
           
-          # 获取最近10个releases
-          releases_json=$(curl -sSL "https://api.github.com/repos/lobehub/lobe-chat/releases?per_page=10")
+          # 获取最近20个releases
+          releases_json=$(curl -sSL "https://api.github.com/repos/lobehub/lobe-chat/releases?per_page=20")
           
           # 查找第一个有AppImage的版本
           latest_available_version=""
           appimage_url=""
           
-          # 创建临时文件来存储结果
-          temp_result="/tmp/check_result_$$"
+          # 提取所有tag名称到数组
+          tag_list=$(echo "$releases_json" | grep '"tag_name":' | sed 's/.*"tag_name": *"\([^"]*\)".*/\1/')
           
-          # 提取所有tag名称并逐个检查
-          echo "$releases_json" | grep '"tag_name":' | sed 's/.*"tag_name": *"\([^"]*\)".*/\1/' | head -10 | while read -r tag_name; do
-            # 如果已经找到了版本，跳出循环
-            if [ -f "${temp_result}_found" ]; then
-              break
+          # 逐个检查每个版本
+          for tag_name in $tag_list; do
+            if [ -z "$tag_name" ]; then
+              continue
             fi
             
             version=${tag_name#v}  # 移除v前缀
@@ -69,18 +68,17 @@ jobs:
             # 获取该版本的详细信息
             release_json=$(curl -sSL "https://api.github.com/repos/lobehub/lobe-chat/releases/tags/$tag_name")
             
-            # 查找AppImage asset
-            appimage_asset=$(echo "$release_json" | grep -o '"browser_download_url": *"[^"]*LobeHub-Beta-[^"]*\.AppImage"' | sed 's/.*"browser_download_url": *"\([^"]*\)".*/\1/' | head -1)
+            # 查找AppImage asset - 更精确的匹配模式
+            appimage_asset=$(echo "$release_json" | grep -o '"browser_download_url": *"[^"]*\.AppImage"' | sed 's/.*"browser_download_url": *"\([^"]*\)".*/\1/' | head -1)
             
             if [ -n "$appimage_asset" ]; then
               # 验证文件确实可以下载
+              echo "🔍 验证AppImage: $appimage_asset"
               if curl -s -I "$appimage_asset" | grep -q "HTTP.*200"; then
                 echo "✅ 找到可用的构建产物: $version"
                 echo "📁 AppImage URL: $appimage_asset"
-                # 保存结果到临时文件
-                echo "$version" > "${temp_result}_version"
-                echo "$appimage_asset" > "${temp_result}_url"
-                touch "${temp_result}_found"
+                latest_available_version="$version"
+                appimage_url="$appimage_asset"
                 break
               else
                 echo "⚠️  版本 $version 的AppImage无法访问"
@@ -90,15 +88,6 @@ jobs:
             fi
           done
           
-          # 读取结果
-          if [ -f "${temp_result}_found" ]; then
-            latest_available_version=$(cat "${temp_result}_version")
-            appimage_url=$(cat "${temp_result}_url")
-            rm -f "${temp_result}_"*
-          else
-            rm -f "${temp_result}_"*
-          fi
-          
           if [ -z "$latest_available_version" ]; then
             echo "❌ 没有找到任何可用的构建产物"
             echo "should_update=false" >> $GITHUB_OUTPUT
@@ -106,6 +95,7 @@ jobs:
           fi
           
           echo "📦 可用版本: $latest_available_version"
+          echo "📁 AppImage URL: $appimage_url"
           echo "latest_version=$latest_available_version" >> $GITHUB_OUTPUT
           echo "appimage_url=$appimage_url" >> $GITHUB_OUTPUT
           
