@@ -206,7 +206,7 @@ jobs:
           git config --global --add safe.directory "*"
           
           # Clone AUR repo to separate directory to avoid subdirectory conflicts
-          git clone https://aur.archlinux.org/${AUR_REPO}.git aur-repo
+          git clone ssh://aur@aur.archlinux.org/${AUR_REPO}.git aur-repo
           cd aur-repo
           
           cp ../PKGBUILD .
@@ -218,6 +218,5 @@ jobs:
             echo "No changes to commit"
           else
             git commit -m "Update to ${{ needs.check-and-find.outputs.latest_version }}"
-            # git push origin master
-            git push https://${AUR_USERNAME}:${AUR_PASSWORD}@aur.archlinux.org/${AUR_REPO}.git master
+            git push origin master
           fi
